@@ -74,7 +74,9 @@ visionpay/
 │   │   └── transactions_screen.dart
 
 ```
+---
 ### 🚀 Future Scope:
 -Multi-language voice support
 -QR code + NFC integration
 -Cloud backup for transaction history
+---
