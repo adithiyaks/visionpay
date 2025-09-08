@@ -48,17 +48,19 @@ Follow these instructions to get the **VisionPay** project running locally.
 ```
 
 ### Step 2: Install Dependencies
+
 ```bash
   flutter pub get
 ```
 
-###Step 3: Run the Application
+### Step 3: Run the Application
+
 Connect your Android device (or start an emulator) and run:
 ```bash
   flutter run
 ```
 
-###📁 Project Structure
+### 📁 Project Structure
 ```bash
 visionpay/
 ├── lib/
@@ -72,7 +74,7 @@ visionpay/
 │   │   └── transactions_screen.dart
 
 ```
-###🚀 Future Scope:
-  Multi-language voice support
-  QR code + NFC integration
-  Cloud backup for transaction history
+### 🚀 Future Scope:
+-Multi-language voice support
+-QR code + NFC integration
+-Cloud backup for transaction history
