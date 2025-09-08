@@ -4,6 +4,14 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:local_auth/local_auth.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 
+// Enum to manage the steps of the payment process
+enum PaymentStep {
+  idle,
+  listeningForNumber,
+  listeningForAmount,
+  confirming,
+}
+
 class PayContactsScreen extends StatefulWidget {
   const PayContactsScreen({super.key});
 
@@ -18,121 +26,167 @@ class _PayContactsScreenState extends State<PayContactsScreen> {
   final FlutterTts _flutterTts = FlutterTts();
 
   // State Management
-  bool _isListening = false;
-  String _recognizedText = 'Press the button and say, "Pay 1234567890"';
-  String _statusMessage = '';
+  PaymentStep _currentStep = PaymentStep.idle;
+  String _statusMessage = 'Press the button to start payment';
   String _detectedNumber = '';
+  String _detectedAmount = '';
 
   @override
   void initState() {
     super.initState();
-    // Set up TTS to call authenticate() after speaking completes.
-    _flutterTts.setCompletionHandler(() {
-      if (_detectedNumber.isNotEmpty) {
-        _authenticate();
-      }
+    // Start the payment flow automatically when the screen loads.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initiatePaymentFlow();
     });
   }
 
-  /// Starts or stops the speech recognition listener.
-  void _listen() async {
-    if (!_isListening) {
-      bool available = await _speech.initialize(
-        onStatus: (status) {
-          if (status == 'notListening') {
-            setState(() => _isListening = false);
-          }
-        },
-        onError: (error) {
-          setState(() => _isListening = false);
-          _updateStatus("Speech recognition error.");
-        },
-      );
-      if (available) {
-        setState(() {
-          _isListening = true;
-          _statusMessage = "Listening...";
-        });
-        _speech.listen(
-          onResult: (result) {
-            setState(() {
-              _recognizedText = result.recognizedWords;
-            });
-            // Once speech is final, process the command.
-            if (result.finalResult) {
-              _processSpeechCommand(result.recognizedWords);
-            }
-          },
-        );
-      }
+  /// 1. Starts the entire multi-step payment flow.
+  Future<void> _initiatePaymentFlow() async {
+    if (_currentStep != PaymentStep.idle) return;
+    _listenForNumber();
+  }
+
+  /// 2. Asks for and listens for the 10-digit phone number.
+  Future<void> _listenForNumber() async {
+    setState(() {
+      _currentStep = PaymentStep.listeningForNumber;
+      _statusMessage = "Please say the 10-digit phone number...";
+    });
+    await _flutterTts.speak("Please say the 10-digit phone number");
+
+    bool available = await _speech.initialize();
+    if (available) {
+      _speech.listen(onResult: (result) {
+        if (result.finalResult) {
+          _processNumber(result.recognizedWords);
+        }
+      });
     } else {
-      setState(() => _isListening = false);
-      _speech.stop();
+      _resetFlow("Speech recognition not available.");
     }
   }
 
-  /// Parses the speech result to find a number and trigger TTS.
-  void _processSpeechCommand(String command) {
-    // Regex to find a 10-digit number.
-    // Removes spaces from the command to handle numbers spoken with pauses.
+  /// 3. Processes the recognized text to find a number.
+  void _processNumber(String command) {
     final RegExp numRegExp = RegExp(r'\b\d{10}\b');
     final Match? match = numRegExp.firstMatch(command.replaceAll(' ', ''));
 
     if (match != null) {
       _detectedNumber = match.group(0)!;
-      final confirmationMessage = "Paying to $_detectedNumber. Please authenticate.";
-      
-      setState(() {
-        _statusMessage = "Number detected. Confirming...";
-        _recognizedText = command; // Keep the full recognized text for context
-      });
-
-      // Speak the confirmation message. The completion handler will trigger authentication.
-      _flutterTts.speak(confirmationMessage);
+      // Move to the next step: listening for the amount
+      _listenForAmount();
     } else {
-      _updateStatus("No 10-digit number found in the command.");
-      _detectedNumber = ''; // Reset detected number
+      _resetFlow("Did not recognize a 10-digit number. Please try again.");
     }
   }
 
-  /// Triggers biometric authentication.
-  Future<void> _authenticate() async {
+  /// 4. Asks for and listens for the payment amount.
+  Future<void> _listenForAmount() async {
     setState(() {
-      _statusMessage = "Waiting for fingerprint...";
+      _currentStep = PaymentStep.listeningForAmount;
+      _statusMessage = "Now, please state the amount...";
     });
+    await _flutterTts.speak("Now, please state the amount");
+
+    bool available = await _speech.initialize();
+    if (available) {
+      _speech.listen(onResult: (result) {
+        if (result.finalResult) {
+          _processAmount(result.recognizedWords);
+        }
+      });
+    } else {
+      _resetFlow("Speech recognition not available.");
+    }
+  }
+
+  /// 5. Processes the recognized text to find an amount and confirms.
+  Future<void> _processAmount(String command) async {
+    final RegExp numRegExp = RegExp(r'\d+(\.\d+)?');
+    final Match? match = numRegExp.firstMatch(command);
+
+    if (match != null) {
+      _detectedAmount = match.group(0)!;
+      setState(() {
+        _currentStep = PaymentStep.confirming;
+        _statusMessage =
+            "Paying $_detectedAmount to $_detectedNumber. Please confirm.";
+      });
+
+      await _flutterTts
+          .speak("Paying $_detectedAmount to the given Number. Please authenticate.");
+
+      if (mounted) {
+        await _authenticateAndFinalize();
+      }
+    } else {
+      _resetFlow("Could not recognize an amount. Please try again.");
+    }
+  }
+
+  /// 6. Triggers biometric auth and finalizes the transaction.
+  Future<void> _authenticateAndFinalize() async {
     try {
       bool authenticated = await _auth.authenticate(
-        localizedReason: 'Confirm payment to $_detectedNumber',
+        localizedReason:
+            'Confirm payment of $_detectedAmount to $_detectedNumber',
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: true,
         ),
       );
-      if (authenticated) {
-        _updateStatus("Success! Payment to $_detectedNumber authorized.", isSuccess: true);
-      } else {
-        _updateStatus("Authentication failed. Payment cancelled.");
+
+      final message = authenticated
+          ? 'Successful Payment to $_detectedNumber.'
+          : 'Authentication failed. Payment cancelled.';
+
+      await _flutterTts.speak(message);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: authenticated ? Colors.green : Colors.red,
+          ),
+        );
       }
     } on PlatformException catch (e) {
-      _updateStatus("Error during authentication: ${e.message}");
+      await _flutterTts.speak("Authentication error.");
+      print(e);
+    } finally {
+      // Reset the flow regardless of success or failure
+      _resetFlow();
     }
   }
 
-  /// Helper to update the status message and reset state.
-  void _updateStatus(String message, {bool isSuccess = false}) {
+  /// Resets the payment state and provides user feedback if necessary.
+  void _resetFlow([String? message]) {
+    if (message != null) {
+      _flutterTts.speak(message);
+    }
     setState(() {
-      _statusMessage = message;
-      if (isSuccess) {
-        _recognizedText = "Payment Complete";
-      }
+      _currentStep = PaymentStep.idle;
+      _statusMessage = 'Press the button to start a new payment';
+      _detectedNumber = '';
+      _detectedAmount = '';
     });
   }
 
   @override
+  void dispose() {
+    _flutterTts.stop();
+    _speech.stop();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    bool isListening = _currentStep == PaymentStep.listeningForNumber ||
+        _currentStep == PaymentStep.listeningForAmount;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pay Contacts', style: TextStyle(color: Colors.white)),
+        title: const Text('Pay by Number', style: TextStyle(color: Colors.white)),
         backgroundColor: Colors.deepPurple,
         iconTheme: const IconThemeData(color: Colors.white),
       ),
@@ -142,17 +196,17 @@ class _PayContactsScreenState extends State<PayContactsScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Status Icon
               Icon(
-                Icons.phonelink_ring,
+                isListening
+                    ? Icons.multitrack_audio
+                    : Icons.mobile_friendly,
                 size: 80,
-                color: _isListening ? Colors.redAccent : Colors.deepPurple,
+                color: isListening ? Colors.redAccent : Colors.deepPurple,
               ),
               const SizedBox(height: 20),
-
-              // Recognized Text Display
+              // Main status text
               Text(
-                _recognizedText,
+                _statusMessage,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 24,
@@ -161,27 +215,35 @@ class _PayContactsScreenState extends State<PayContactsScreen> {
                 ),
               ),
               const SizedBox(height: 40),
-
-              // Status Message Display
-              Text(
-                _statusMessage,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.deepPurple,
+              // Secondary details display
+              if (_detectedNumber.isNotEmpty)
+                Text(
+                  "Number: $_detectedNumber",
+                  style: const TextStyle(fontSize: 18, color: Colors.grey),
                 ),
-              ),
+              if (_detectedAmount.isNotEmpty)
+                Text(
+                  "Amount: $_detectedAmount",
+                  style: const TextStyle(fontSize: 18, color: Colors.grey),
+                ),
             ],
           ),
         ),
       ),
       floatingActionButton: FloatingActionButton.large(
-        onPressed: _listen,
-        backgroundColor: _isListening ? Colors.red : Colors.deepPurple,
-        child: Icon(_isListening ? Icons.mic : Icons.mic_none, color: Colors.white, size: 40),
+        onPressed:
+            _currentStep == PaymentStep.idle ? _initiatePaymentFlow : null,
+        backgroundColor:
+            _currentStep == PaymentStep.idle ? Colors.deepPurple : Colors.grey,
+        child: Icon(
+          isListening ? Icons.mic : Icons.play_arrow,
+          color: Colors.white,
+          size: 40,
+        ),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
     );
   }
 }
+
+
