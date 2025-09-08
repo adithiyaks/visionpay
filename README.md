@@ -76,7 +76,7 @@ visionpay/
 ```
 ---
 ### 🚀 Future Scope:
--Multi-language voice support
--QR code + NFC integration
--Cloud backup for transaction history
+- Multi-language voice support
+- QR code + NFC integration
+- Cloud backup for transaction history
 ---
